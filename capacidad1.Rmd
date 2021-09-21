@@ -1,0 +1,150 @@
+---
+title: "Análisis de Capacidad"
+author: "Mejora de Procesos (1479)"
+date: ""
+output:
+  prettydoc::html_pretty:
+    theme: cayman
+    highlight: github
+    fig_width: 7
+    fig_height: 5
+    fig_caption: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+```{r echo=FALSE, message=FALSE} 
+library(prettydoc) # tema pretty para el html
+library(packagedocs) # compilación html
+library(ggplot2)
+library(dplyr)
+library(SixSigma)
+library(pander) # para tablas en Rmarkdown
+library(qcc)
+```
+
+
+Vamos a utilizar los tiempos de espera en cola de los clientes (estudiantes) que han solicitado el reconocimiento de créditos transversales en algún momento a lo largo del curso 2015-16.
+
+
+Leemos en primer lugar los datos y seleccionamos las variables 'tpo.espera.min', de los tiempos de espera en cola expresados en minutos, y 'mes', referido al mes en el que se ha presentado la solicitud.
+```{r}
+# utilizamos un banco de datos de tiempos de espera en cola del curso 2016-17
+datosbd=load("cegeca16.RData")
+
+# Seleccionamos exclusivamente los tiempos de espera y el mes
+datos=tiemposespera %>%
+  select(tpo.espera.min,mes)%>%
+  mutate(mes=factor(mes,levels=c("sept.","oct.","nov.","dic." , "ene." , "feb.","mar.","abr." ,"may.", "jun.",  "jul.")))%>%
+  filter(tpo.espera.min != is.na(tpo.espera.min))
+head(datos)
+```
+
+
+Para los tiempos de espera en cola calculamos una descriptiva global y otra por meses:
+```{r}
+resumen=datos %>%
+  summarise(media=mean(tpo.espera.min),min=min(tpo.espera.min),max=max(tpo.espera.min),total=n())
+pander(resumen)
+
+resumen.mes=datos %>%
+  group_by(mes)%>%
+  summarise(media=mean(tpo.espera.min),min=min(tpo.espera.min),max=max(tpo.espera.min),total=n())
+pander(resumen.mes)
+
+# Y los visualizamos gráficamente:
+ggplot(datos,aes(mes,tpo.espera.min))+geom_boxplot(aes(colour=as.factor(mes)))
+```
+
+
+
+Se aprecia claramente que los meses de junio a noviembre tienen un comportamiento especialmente diferente al resto de meses. Veamos este comportamiento respecto a rendimiento/capacidad del sistema.
+
+Creamos una función que nos calcula los índices de capacidad básicos:
+```{r}
+cap.fun=function(datos,lsl,usl){
+  xbar=mean(datos)
+  s=sd(datos)
+  zu=(usl-xbar)/s
+  zl=(lsl-xbar)/s
+  pdfe=pnorm(zl)+1-pnorm(zu)
+zbench=qnorm(pdfe)
+zscore=min(c(zu,-zl))
+Pp=(usl-lsl)/(6*s)
+Ppk=min(c(zu/3,-zl/3 ))
+return(data.frame(zl=zl,zu=zu,pdfe=pdfe,zbench=zbench,zscore=zscore,Pp=Pp,Ppk=Ppk))}
+```
+
+Y calculamos dichos índices de capacidad de modo global con todos los datos:
+```{r}
+lsl=0;usl=60
+cap.global=cap.fun(datos$tpo.espera.min,lsl,usl)
+pander(cap.global)
+```
+y de modo específico cada mes:
+```{r}
+pormes=tapply(datos$tpo.espera.min,INDEX=as.factor(datos$mes),FUN=cap.fun,lsl=lsl,usl=usl)
+pander(pormes)
+```
+
+Si además definimos qué entendemos por defecto, podemos calcular el rendimiento (YIELD) y todas las medidas relacionadas para cuantificar capacidad en términos del número de defectos. Globalmente tenemos:
+```{r}
+defectos=sum(datos$tpo.espera.min>usl)+sum(datos$tpo.espera.min<lsl)
+opp=length(datos$tpo.espera.min)
+pander(ss.ca.yield(defects = defectos, rework = 0, opportunities = opp))
+```
+
+
+```{r}
+ss.ca.cp(datos$tpo.espera.min,LSL=0,USL=14,LT=TRUE)
+
+```
+
+
+## Análisis de capacidad con 'qcc'
+Utilizando la librería 'qcc' realizamos el análisis de capacidad con todos los datos disponibles, considerando posibles diferencias entre los meses del curso:
+```{r}
+cap <- qcc.groups(datos$tpo.espera.min, datos$mes)
+q <- qcc(cap, type="xbar", nsigmas=3, plot=TRUE)
+plot(q)
+
+lsl=0;usl=60
+target=30
+process.capability(q, spec.limits=c(lsl,usl),target=target)
+```
+
+
+Separamos en particular el mes de septiembre y repetimos el análisis de capacidad con idénticos objetivos y límites de especificación, pero diferenciando por días (laborables):
+```{r}
+datos.sep=tiemposespera%>%
+  select(fecha,mes,tpo.espera.min)%>%
+  filter(mes=="sept.")%>%
+  mutate(fecha=factor(fecha,levels=as.character(unique(fecha[mes=="sept."]))))
+
+cap <- qcc.groups(datos.sep$tpo.espera.min, datos.sep$fecha)
+q <- qcc(cap, type="xbar", nsigmas=3, plot=TRUE)
+plot(q)
+
+lsl=0;usl=60
+target=30
+process.capability(q, spec.limits=c(lsl,usl),target=target)
+
+```
+
+Quitamos ahora los meses críticos, de junio a noviembre (ambos incluidos) y enero:
+```{r}
+datos.p=datos %>%
+  filter(mes %in% c( "dic.", "feb.", "mar.", "abr.", "may.")) %>%
+  mutate(mes=factor(mes,levels=unique(mes)))
+
+cap <- qcc.groups(datos.p$tpo.espera.min, datos.p$mes)
+q <- qcc(cap, type="xbar", nsigmas=3, plot=TRUE)
+plot(q)
+
+lsl=0;usl=60
+target=30
+process.capability(q, spec.limits=c(lsl,usl),target=target)
+```
+
+
